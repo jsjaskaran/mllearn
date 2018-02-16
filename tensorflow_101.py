@@ -260,3 +260,191 @@ plt.xlim([-6, 6])
 # assert that all class probablities sum to one
 print np.sum(x_softmax)
 assert abs(1.0 - x_softmax.sum()) < 1e-8
+
+#To speed up training we'll only work on a subset of the data
+data = np.load('mnist.npz')
+num_classes = 10
+x_train = data['X_train'][:1000].astype('float32')
+targets_train = data['y_train'][:1000].astype('int32')
+
+x_valid = data['X_valid'][:500].astype('float32')
+targets_valid = data['y_valid'][:500].astype('int32')
+
+x_test = data['X_test'][:500].astype('float32')
+targets_test = data['y_test'][:500].astype('int32')
+
+print "Information on dataset"
+print "x_train", x_train.shape
+print "targets_train", targets_train.shape
+print "x_valid", x_valid.shape
+print "targets_valid", targets_valid.shape
+print "x_test", x_test.shape
+print "targets_test", targets_test.shape
+
+#plot a few MNIST examples
+idx = 0
+canvas = np.zeros((28*10, 10*28))
+for i in range(10):
+    for j in range(10):
+        canvas[i*28:(i+1)*28, j*28:(j+1)*28] = x_train[idx].reshape((28, 28))
+        idx += 1
+plt.figure(figsize=(7, 7))
+plt.axis('off')
+plt.imshow(canvas, cmap='gray')
+plt.title('MNIST handwritten digits')
+plt.show()
+
+#Hyperparameters
+
+num_classes = 10
+num_l1 = 512
+num_features = x_train.shape[1]
+
+# resetting the graph ...
+reset_default_graph()
+
+# Setting up placeholder, this is where your data enters the graph!
+x_pl = tf.placeholder(tf.float32, [None, num_features])
+
+# defining our weight initializers
+weight_initializer = tf.truncated_normal_initializer(stddev=0.1)
+
+# Setting up the trainable weights of the network
+with tf.variable_scope('l_1'):
+    W_1 = tf.get_variable('W', [num_features, num_l1],
+                          initializer=weight_initializer)
+    b_1 = tf.get_variable('b', [num_l1],
+                          initializer=tf.constant_initializer(0.0))
+
+with tf.variable_scope('l_2'):
+    W_2 = tf.get_variable('W', [num_l1, num_classes],
+                          initializer=weight_initializer)
+    b_2 = tf.get_variable('b', [num_classes],
+                          initializer=tf.constant_initializer(0.0))
+
+
+# Building the layers of the neural network
+l1 = tf.matmul(x_pl, W_1) + b_1
+l1_nonlinear = tf.nn.elu(l1) # you can try with various activation functions!
+l2 = tf.matmul(l1, W_2) + b_2
+y = tf.nn.softmax(l2)
+
+# y_ is a placeholder variable taking on the value of the target batch.
+y_ = tf.placeholder(tf.float32, [None, num_classes])
+
+# computing cross entropy per sample
+cross_entropy = -tf.reduce_sum(y_ * tf.log(y), reduction_indices=[1])
+
+# averaging over samples
+loss_tn = tf.reduce_mean(cross_entropy)
+
+# L2 regularization
+#reg_scale = 0.0001
+#regularize = tf.contrib.layers.l2_regularizer(reg_scale)
+#params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+#reg_term = sum([regularize(param) for param in params])
+#loss_tn += reg_term
+
+# defining our optimizer
+optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.1)
+
+# applying the gradients
+train_op = optimizer.minimize(loss_tn)
+
+# notice, alternatively you can use train_op = optimizer.minimize(crossentropy)
+# instead of the three steps above
+
+
+#Test the forward pass
+x = np.random.normal(0,1, (45, 28*28)).astype('float32') #dummy data
+
+# restricting memory usage, TensorFlow is greedy and will use all memory otherwise
+gpu_opts = tf.GPUOptions(per_process_gpu_memory_fraction=0.2)
+# initialize the Session
+sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_opts))
+sess.run(tf.initialize_all_variables())
+res = sess.run(fetches=[y], feed_dict={x_pl: x})
+print "y", res[0].shape
+
+# using confusionmatrix to handle 
+from confusionmatrix import ConfusionMatrix
+
+# setting hyperparameters and gettings epoch sizes
+batch_size = 100
+num_epochs = 100
+num_samples_train = x_train.shape[0]
+num_batches_train = num_samples_train // batch_size
+num_samples_valid = x_valid.shape[0]
+num_batches_valid = num_samples_valid // batch_size
+
+# setting up lists for handling loss/accuracy
+train_acc, train_loss = [], []
+valid_acc, valid_loss = [], []
+test_acc, test_loss = [], []
+cur_loss = 0
+loss = []
+## TRAINING ##
+for epoch in range(num_epochs):
+    #Forward->Backprob->Update params
+    cur_loss = 0
+    for i in range(num_batches_train):
+        idx = range(i*batch_size, (i+1)*batch_size)
+        x_batch = x_train[idx]
+        target_batch = targets_train[idx]
+        feed_dict_train = {x_pl: x_batch, y_: onehot(target_batch, num_classes)}
+        fetches_train = [train_op, loss_tn]
+        res = sess.run(fetches=fetches_train, feed_dict=feed_dict_train)
+        batch_loss = res[1]
+        cur_loss += batch_loss
+    loss += [cur_loss/batch_size]
+    
+    confusion_valid = ConfusionMatrix(num_classes)
+    confusion_train = ConfusionMatrix(num_classes)
+
+    ### EVAL - TRAIN ###
+    for i in range(num_batches_train):
+        idx = range(i*batch_size, (i+1)*batch_size)
+        x_batch = x_train[idx]
+        targets_batch = targets_train[idx]
+        # what to feed our accuracy op
+        feed_dict_eval_train = {x_pl: x_batch, y_: onehot(targets_batch, num_classes)}
+        # deciding which parts to fetch
+        fetches_eval_train = [y]
+        # running the validation
+        res = sess.run(fetches=fetches_eval_train, feed_dict=feed_dict_eval_train)
+        # collecting and storing predictions
+        net_out = res[0]
+        preds = np.argmax(net_out, axis=-1)
+        confusion_train.batch_add(targets_batch, preds)
+
+    ### EVAL - VALIDATION ###
+    confusion_valid = ConfusionMatrix(num_classes)
+    for i in range(num_batches_valid):
+        idx = range(i*batch_size, (i+1)*batch_size)
+        x_batch = x_valid[idx]
+        targets_batch = targets_valid[idx]
+        # what to feed our accuracy op
+        feed_dict_eval_train = {x_pl: x_batch, y_: onehot(targets_batch, num_classes)}
+        # deciding which parts to fetch
+        fetches_eval_train = [y]
+        # running the validation
+        res = sess.run(fetches=fetches_eval_train, feed_dict=feed_dict_eval_train)
+        # collecting and storing predictions
+        net_out = res[0]
+        preds = np.argmax(net_out, axis=-1) 
+        confusion_valid.batch_add(targets_batch, preds)
+    
+    train_acc_cur = confusion_train.accuracy()
+    valid_acc_cur = confusion_valid.accuracy()
+
+    train_acc += [train_acc_cur]
+    valid_acc += [valid_acc_cur]
+    print "Epoch %i : Train Loss %e , Train acc %f,  Valid acc %f " \
+    % (epoch+1, loss[-1], train_acc_cur, valid_acc_cur)
+    
+    
+epoch = np.arange(len(train_acc))
+plt.figure()
+plt.plot(epoch,train_acc,'r',epoch,valid_acc,'b')
+plt.legend(['Train Acc','Val Acc'])
+plt.xlabel('Updates'), plt.ylabel('Acc')
