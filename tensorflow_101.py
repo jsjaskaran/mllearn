@@ -127,4 +127,136 @@ cross_entropy = -tf.reduce_sum(y_ * tf.log(y), reduction_indices=[1])
 # averaging over samples
 cross_entropy = tf.reduce_mean(cross_entropy)
 
+# using the graph to print ops
+print("operations")
+operations = [op.name for op in tf.get_default_graph().get_operations()]
+print(operations)
+print
+# variables are accessed through tensorflow
+print("variables")
+variables = [var.name for var in tf.all_variables()]
+print(variables)
 
+
+# Defining our optimizer (try with different optimizers here!)
+optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.1)
+
+# Computing our gradients
+grads_and_vars = optimizer.compute_gradients(cross_entropy)
+
+# Applying the gradients
+train_op = optimizer.apply_gradients(grads_and_vars)
+
+# Notice, alternatively you can use train_op = optimizer.minimize(crossentropy)
+# instead of the three steps above
+
+# making a one-hot encoded vector of correct (1) and incorrect (0) predictions
+correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
+
+# averaging the one-hot encoded vector
+accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+
+# defining a function to make predictions using our classifier
+def pred(X_in, sess):
+    # first we must define what data to give it
+    feed_dict = {x_pl: X_in}
+    # secondly our fetches
+    fetches = [y]
+    # utilizing the given session (ref. sess) to compute results
+    res = sess.run(fetches, feed_dict)
+    # res is a list with each indices representing the corresponding element in fetches
+    return res[0]
+
+# Training loop
+num_epochs = 1000
+
+train_cost, val_cost, val_acc = [],[],[]
+# restricting memory usage, TensorFlow is greedy and will use all memory otherwise
+gpu_opts = tf.GPUOptions(per_process_gpu_memory_fraction=0.2)
+with tf.Session(config=tf.ConfigProto(gpu_options=gpu_opts)) as sess:
+    
+    # initializing all variables
+    init = tf.initialize_all_variables()
+    sess.run(init)
+    plot_decision_boundary(lambda x: pred(x, sess), X_val, y_val)
+    plt.title("Untrained Classifier")
+    for e in range(num_epochs):
+        ### TRAINING ###
+        # what to feed to our train_op
+        # notice we onehot encode our predictions to change shape from (batch,) -> (batch, num_output)
+        feed_dict_train = {x_pl: X_tr, y_: onehot(y_tr, num_output)}
+        
+        # deciding which parts to fetch, train_op makes the classifier "train"
+        fetches_train = [train_op, cross_entropy]
+        
+        # running the train_op
+        res = sess.run(fetches=fetches_train, feed_dict=feed_dict_train)
+        # storing cross entropy (second fetch argument, so index=1)
+        train_cost += [res[1]]
+    
+        ### VALIDATING ###
+        # what to feed our accuracy op
+        feed_dict_valid = {x_pl: X_val, y_: onehot(y_val, num_output)}
+
+        # deciding which parts to fetch
+        fetches_valid = [cross_entropy, accuracy]
+
+        # running the validation
+        res = sess.run(fetches=fetches_valid, feed_dict=feed_dict_valid)
+        val_cost += [res[0]]
+        val_acc += [res[1]]
+
+        if e % 100 == 0:
+            print "Epoch %i, Train Cost: %0.3f\tVal Cost: %0.3f\t Val acc: %0.3f"%(e, train_cost[-1],val_cost[-1],val_acc[-1])
+
+    ### TESTING ###
+    # what to feed our accuracy op
+    feed_dict_test = {x_pl: X_te, y_: onehot(y_te, num_output)}
+
+    # deciding which parts to fetch
+    fetches_test = [cross_entropy, accuracy]
+
+    # running the validation
+    res = sess.run(fetches=fetches_test, feed_dict=feed_dict_test)
+    test_cost = res[0]
+    test_acc = res[1]
+    print "\nTest Cost: %0.3f\tTest Accuracy: %0.3f"%(test_cost, test_acc)
+    
+    # For plotting purposes
+    plot_decision_boundary(lambda x: pred(x, sess), X_te, y_te)
+
+# notice: we do not need to use the session environment anymore, so returning from it.
+plt.title("Trained Classifier")
+
+epoch = np.arange(len(train_cost))
+plt.figure()
+plt.plot(epoch,train_cost,'r',epoch,val_cost,'b')
+plt.legend(['Train Loss','Val Loss'])
+plt.xlabel('Updates'), plt.ylabel('Loss')
+
+# PLOT OF DIFFERENT OUTPUT USNITS
+x = np.linspace(-6, 6, 100)
+relu = lambda x: np.maximum(0, x)
+leaky_relu = lambda x: np.maximum(0, x) + 0.1*np.minimum(0, x) # probably a slow implementation....
+elu = lambda x: (x > 0)*x + (1 - (x > 0))*(np.exp(x) - 1) 
+sigmoid = lambda x: (1+np.exp(-x))**(-1)
+def softmax(w, t = 1.0):
+    e = np.exp(w)
+    dist = e / np.sum(e)
+    return dist
+x_softmax = softmax(x)
+
+plt.figure(figsize=(6,6))
+plt.plot(x, relu(x), label='ReLU', lw=2)
+plt.plot(x, leaky_relu(x), label='Leaky ReLU',lw=2)
+plt.plot(x, elu(x), label='Elu', lw=2)
+plt.plot(x, sigmoid(x), label='Sigmoid',lw=2)
+plt.legend(loc=2, fontsize=16)
+plt.title('Non-linearities', fontsize=20)
+plt.ylim([-2, 5])
+plt.xlim([-6, 6])
+
+# softmax
+# assert that all class probablities sum to one
+print np.sum(x_softmax)
+assert abs(1.0 - x_softmax.sum()) < 1e-8
